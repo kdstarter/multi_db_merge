@@ -11,6 +11,10 @@ module PgDbMerge
     # Initialize configuration defaults for originally generated Rails version.
     config.load_defaults 6.0
 
+    # config.active_record.database_selector = { delay: 2.seconds }
+    # config.active_record.database_resolver = ActiveRecord::Middleware::DatabaseSelector::Resolver
+    # config.active_record.database_resolver_context = ActiveRecord::Middleware::DatabaseSelector::Resolver::Session
+
     # Settings in config/environments/* take precedence over those specified here.
     # Application configuration can go into files in config/initializers
     # -- all .rb files in that directory are automatically loaded after loading
