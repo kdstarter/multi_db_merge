@@ -18,7 +18,17 @@ module DbClient
   def query_larger(sql)
     puts '---query_larger---' if @larger_conn.blank?
     @larger_conn ||= ActiveRecord::Base.establish_connection(Rails.application.config.database_configuration[Rails.env]['larger']).connection
-    @larger_conn.execute(sql)
+    begin
+      @larger_conn.execute(sql)
+    rescue ActiveRecord::StatementInvalid => e
+      if e.inspect.include?('PG::ConnectionBad')
+        puts "largerError: #{e.inspect}"
+        @larger_conn.reconnect!
+        @larger_conn.execute(sql)
+      else
+        raise e
+      end
+    end
   end
 
   def smaller(&block)
@@ -31,7 +41,17 @@ module DbClient
   def query_smaller(sql)
     puts '---query_smaller---' if @smaller_conn.blank?
     @smaller_conn ||= ActiveRecord::Base.establish_connection(Rails.application.config.database_configuration[Rails.env]['smaller']).connection
-    @smaller_conn.execute(sql)
+    begin
+      @smaller_conn.execute(sql)
+    rescue ActiveRecord::StatementInvalid => e
+      if e.inspect.include?('PG::ConnectionBad')
+        puts "smallerError: #{e.inspect}"
+        @smaller_conn.reconnect!
+        @smaller_conn.execute(sql)
+      else
+        raise e
+      end
+    end
   end
 end
 

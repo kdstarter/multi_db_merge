@@ -6,7 +6,7 @@
 #
 default: &default
   adapter: postgresql
-  pool: 3
+  pool: 5
   timeout: 5000
   host: <%= ENV.fetch('DATABASE_HOST') { 'localhost' } %>
   username: <%= ENV.fetch('DATABASE_USERNAME') { 'postgres' } %>
