@@ -22,7 +22,7 @@ module DbClient
       @larger_conn.execute(sql)
     rescue ActiveRecord::StatementInvalid => e
       if e.inspect.include?('PG::ConnectionBad')
-        puts "largerError: #{e.inspect}"
+        puts "largerWarn: #{e.inspect}"
         @larger_conn.reconnect!
         @larger_conn.execute(sql)
       else
