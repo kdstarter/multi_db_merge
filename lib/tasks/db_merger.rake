@@ -2,12 +2,13 @@ namespace :db_merger do
   desc 'Check DB and update Conflict IDs'
   task check_tables: [:environment] do
     @apply_fix = false
+    @reserved_rows = 1
     start_time = Time.now.to_f.round(3)
     DbClient.log_by :info, "Start from #{start_time}."
 
     @tables = { larger: [], smaller: [], expect: [] }
     count_expect_tables
-    update_all_tables_conflict(:smaller)
+    update_tables_conflict_id(:smaller)
 
     end_time = Time.now.to_f.round(3)
     time_spent = (end_time - start_time).round(3)
@@ -15,14 +16,14 @@ namespace :db_merger do
   end
 
   # --- begin 更新冲突的ID ---
-  def update_all_tables_conflict(which_db)
+  def update_tables_conflict_id(which_db)
     num = 1
     @to_do_columns.each do |table_name, asso|
       # 按冲突ID更新主表、以及关联表
       conflict_ids = @to_do_columns[table_name][:conflict_ids]
-      DbClient.log_by :info, "---smaller table#{num} #{table_name}, #{conflict_ids.size} conflict_ids, #{asso[:foreign_keys].size} foreign_keys: #{asso[:foreign_keys]}"
+      DbClient.log_by :info, "---small table#{num} #{table_name}, #{conflict_ids.size} conflict_ids, #{asso[:foreign_keys].size} foreign_keys: #{asso[:foreign_keys]}"
       conflict_ids.each_with_index do |old_id, index|
-        update_conflict_id(which_db, table_name, old_id, index, asso[:foreign_keys])
+        update_conflict_id(which_db, table_name, old_id, index + 1, asso[:foreign_keys])
       end
       num += 1
     end
@@ -30,8 +31,12 @@ namespace :db_merger do
 
   # table_name 主表名，asso_tables 关联表的表名，与外键名
   def update_conflict_id(which_db, table_name, old_id, index, asso_tables = [])
-    curr_new_id = table_info(:larger, table_name)['max_id'] + index + 2
-    larger_table = table_info(:larger, table_name)
+    if table_info(:larger, table_name)['rows'] < table_info(:smaller, table_name)['rows']
+      larger_table = table_info(:smaller, table_name)
+    else
+      larger_table = table_info(:larger, table_name)
+    end
+    curr_new_id = larger_table['max_id'] + index + @reserved_rows
 
     ActiveRecord::Base.transaction do
       asso_tables.each_with_index do |table, asso_index|
@@ -47,7 +52,7 @@ namespace :db_merger do
         asso_result = DbClient.query(which_db, asso_sql)
         asso_rows = asso_result.cmd_tuples
 
-        if index < 2
+        if index <= 2
           DbClient.log_sql :info, "ASSO#{asso_index} SQL#{index}: #{asso_table} update #{asso_rows} rows from ID#{old_id} to #{curr_new_id}, largerMaxId #{larger_table['max_id']}, #{asso_sql}"
         elsif index < 10
           DbClient.log_sql :info, "A#{old_id}."
@@ -70,7 +75,7 @@ namespace :db_merger do
         raise error
       end
 
-      if index < 2
+      if index <= 2
         DbClient.log_sql :info, "MAIN SQL#{index}: #{table_name} update #{main_rows} rows from ID#{old_id} to #{curr_new_id}, largerMaxId #{larger_table['max_id']}, #{main_sql}"
         DbClient.log_sql :info, '' if index == 0
       elsif index < 10
@@ -87,7 +92,7 @@ namespace :db_merger do
     tables_smaller = tables_info(:smaller)
     get_tables_id_columns(:smaller)
     tables_smaller.each do |table|
-      count_expect_table(table)
+      count_expect_table_by_id(table)
     end
     
     # DbClient.log_by :info, "---smaller #{@tables[:smaller].size} tables---"
@@ -139,13 +144,16 @@ namespace :db_merger do
     foreign_keys
   end
 
-  def count_expect_table(small_table)
+  def count_expect_table_by_id(small_table)
     table_name = small_table['table_name']
     larger_table = table_info(:larger, table_name)
-    expect_table = larger_table.clone
     if larger_table.blank?
       DbClient.log_by :warn, "no table #{table_name} in largerDB." # Todo...
       return
+    elsif larger_table['rows'] < small_table['rows']
+      expect_table = small_table.clone
+    else
+      expect_table = larger_table.clone
     end
     
     expect_table['expect_rows'] = larger_table['rows'] + small_table['rows']
@@ -158,25 +166,34 @@ namespace :db_merger do
 
     # 计算重复的ID与外键数据
     if small_table['max_id'].to_i == 0
-      # uuid 为主键
+      # uuid 为主键, Todo fix repeated uuid
       # ids_str = smaller_ids.map(){|id| "'#{id}'"}.join(',')
       # sql_same_ids = "SELECT id FROM #{table_name} WHERE id in (#{ids_str})"
       # same_ids = DbClient.query(:larger, sql_same_ids).to_a.map(){|item| item['id']}
       # if same_ids.size == 0
       #   DbClient.log_by :info, "#{table_name} no repeat uuid #{same_ids}, #{small_table}"
       # else
-      #   DbClient.log_by :info, "#{table_name} #{same_ids.size} repeated uuid #{same_ids.take(10)}, #{small_table}"
+      #   DbClient.log_by :warn, "#{table_name} #{same_ids.size} repeated uuid #{same_ids.take(10)}, #{small_table}"
       #   foreign_keys = get_foreign_keys(:smaller, table_name, 'id')
       # end
     else
       sql_same_ids = "SELECT id FROM #{table_name} WHERE id in (#{smaller_ids.join(',')})"
       same_ids = DbClient.query(:larger, sql_same_ids).to_a.map(){|item| item['id']}.sort
-      expect_table['expect_max_id'] = larger_table['max_id'] + same_ids.size + 1
+      if same_ids.size == 0
+        expect_table['expect_max_id'] = expect_table['max_id']
+      else
+        if larger_table['rows'] < small_table['rows']
+          DbClient.log_by :warn, "table #{table_name} rows #{larger_table['rows']} < #{small_table['rows']}"
+          expect_table['expect_max_id'] = expect_table['max_id'] + larger_table['rows'] + @reserved_rows
+        else
+          expect_table['expect_max_id'] = expect_table['max_id'] + small_table['rows'] + @reserved_rows
+        end
+      end
 
       if same_ids.size == 0
         DbClient.log_by :info, "#{table_name} no repeat id #{same_ids}, #{small_table}"
       else
-        DbClient.log_by :info, "#{table_name} #{same_ids.size} repeated id #{same_ids.take(100)}, #{small_table}"
+        DbClient.log_by :warn, "#{table_name} #{same_ids.size} repeated id #{same_ids.take(100)}, #{small_table}"
         # 待同步更新的外键数据
         foreign_keys = get_foreign_keys(:smaller, table_name, 'id')
         @to_do_columns[table_name] = { conflict_ids: same_ids, foreign_keys: foreign_keys}
