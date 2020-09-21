@@ -55,6 +55,7 @@ namespace :db_merger do
           DbClient.log_by :warn, "Do #{table_name} conflict_#{id_column}s for asso #{foreign_keys}"
 
           set_as_same_id_by_email(which_db, table_name, id_column, conflict_ids, foreign_keys)
+          delete_same_by_id(table_name, id_column, conflict_ids)
         else
           DbClient.log_by :warn, "Todo #{strategy} merge #{table_name} #{id_column}(#{id_column_type}) "
         end
@@ -62,6 +63,32 @@ namespace :db_merger do
         DbClient.log_by :warn, "Todo #{strategy} merge #{table_name} #{id_column}(#{id_column_type}) "
       end
       num += 1
+    end
+  end
+
+  # 只删除重复的主表记录
+  def delete_same_by_id(table_name, id_column, conflict_ids)
+    which_db = :smaller
+    if @apply_fix
+      same_ids_str = conflict_ids.map(){|item| "'#{item[id_column]}'"}.join(',')
+      main_sql = "DELETE FROM #{table_name} WHERE #{id_column} IN (#{same_ids_str})"
+
+      ActiveRecord::Base.transaction do
+        main_result = DbClient.query(which_db, main_sql)
+        main_rows = main_result.cmd_tuples
+
+        expect_main_rows = conflict_ids.size
+        if main_rows != expect_main_rows
+          error = "Delete SQL: #{table_name} expect #{expect_main_rows} rows, but #{main_rows} rows. #{main_sql}"
+          DbClient.log_by :error, "Error #{error}"
+          raise error
+        else
+          DbClient.log_by :info, "#{table_name} deleted #{main_rows} rows."
+        end
+      end
+    else
+      same_ids = query_sames_ids(which_db, conflict_ids, table_name, id_column)
+      DbClient.log_by :warn, "Todo delete #{same_ids.size} #{table_name} By #{id_column}"
     end
   end
 
