@@ -15,10 +15,10 @@ default: &default
 development:
   larger:
     <<: *default
-    database: 'aaa_db_larger1'
+    database: 'db_larger1'
 
   smaller:
     <<: *default
-    database: 'aaa_db_smaller1'
+    database: 'db_smaller2'
     # replica: true
 

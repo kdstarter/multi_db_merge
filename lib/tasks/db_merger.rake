@@ -1,22 +1,55 @@
 namespace :db_merger do
-  desc 'Check DB and update Conflict IDs'
+  desc 'Check DB and update conflict data IDs'
   task check_tables: [:environment] do
-    @apply_fix = false
-    @reserved_rows = 1
+    @apply_fix = ENV['apply_fix'].to_i == 1 # 默认为 false，传参 apply_fix=1 则为true
+    @reserved_rows = 1 # smallerDB每个表第一条数据插入到largerDB时，要间隔的ID数量 (ID为整数时有效)
     @DEFAULT_ID = 'id'
+
     start_time = Time.now.to_f.round(3)
     DbClient.log_by :info, "Start from #{start_time}."
+    # 不同步的数据表
+    @except_tables = %w(admin_users versions ar_internal_metadata edu_emails schema_migrations migrations)
 
-    @to_do_columns = {}
-    @tables = { larger: [], smaller: [], expect: [] }
-    # master_table = [@DEFAULT_ID, '', :keep_all]  # Step 1
-    master_table = ['email', 'members', :keep_assos] # Step 2
-    count_expect_tables(master_table)
-    update_tables_conflict_id(:smaller, master_table)
+    execute_step1 # keep_all策略，合并主表以及关联表
+    execute_step2 # keep_assos策略，合并关联表和不重复的主表数据，因为主表重复的数据在largerDB已存在
+    execute_step3 # 删除不需要迁移的数据表数据
+    # 前3步修改的是smallerDB数据，step4: 使用Navicat将smallerDB所有表的数据导出，再全部导入到largerDB
 
     end_time = Time.now.to_f.round(3)
     time_spent = (end_time - start_time).round(3)
-    DbClient.log_by :info, "Total check spent #{time_spent} Seconds, end at #{end_time}.\n"
+    DbClient.log_by :info, "Total spent #{time_spent} Seconds, end at #{end_time}.\n"
+  end
+
+  # keep_all：比对两个数据库中重复的ID，同步更新主表ID以及关联表外键
+  def execute_step1
+    @to_do_columns = {}
+    @tables = { larger: [], smaller: [], expect: [] }
+    master_table = [@DEFAULT_ID, '', :keep_all]  # Step 1
+    count_expect_tables(master_table)
+    update_tables_conflict_id(:smaller, master_table)
+  end
+
+  # 比对members表相同的email，同步更新主表ID以及关联表外键(ID固定取largerDB中对应ID)，然后删除主表ID重复的数据
+  def execute_step2
+    @to_do_columns = {}
+    @tables = { larger: [], smaller: [], expect: [] }
+    master_table = ['email', 'members', :keep_assos] # Step 2 使用members表的email字段作为示范
+    count_expect_tables(master_table)
+    update_tables_conflict_id(:smaller, master_table)
+  end
+
+  def execute_step3
+    which_db = :smaller
+    @except_tables.each do |table_name|
+      if @apply_fix
+        delete_sql = "DELETE FROM #{table_name} WHERE 1=1"
+        main_result = DbClient.query(which_db, delete_sql)
+        main_rows = main_result.cmd_tuples
+        DbClient.log_by :warn, "#{table_name} deleted #{main_rows} rows."
+      else
+        DbClient.log_by :warn, "Todo table #{table_name} clear data"
+      end
+    end
   end
 
   # --- begin 更新冲突的ID ---
@@ -41,7 +74,7 @@ namespace :db_merger do
         # 更新冲突的ID为与largerDB“不相同的”ID
         if id_column_type.start_with?('int')
           conflict_ids.each_with_index do |old_id, index|
-            curr_new_id = larger_table['max_id'] + index + @reserved_rows
+            curr_new_id = larger_table['max_id'] + (index + 1) + @reserved_rows
             update_conflict_id(which_db, table_name, id_column, old_id, curr_new_id, index + 1, asso[:foreign_keys])
           end
         else
@@ -299,6 +332,7 @@ namespace :db_merger do
         DbClient.log_by :info, "#{table_name} no repeat #{id_column} #{same_ids}, #{small_table}"
       else
         # email重复的主表数据只保留一份
+        same_ids = same_ids.select{|item| item['email'].present?}
         expect_table['expect_rows'] -= same_ids.size
         DbClient.log_by :warn, "#{table_name} #{same_ids.size} repeated #{id_column} #{same_ids.take(10)}, #{small_table}"
         foreign_keys = get_foreign_keys(:smaller, table_name, id_column, schemas)
@@ -339,13 +373,11 @@ namespace :db_merger do
     @tables ||= {}
     return @tables[which_db] if @tables[which_db].present?
 
-    # Todo...不同步的表
-    except_tables = %w(admin_users versions ar_internal_metadata edu_emails schema_migrations migrations)
     tables_sql = 'SELECT relname AS table_name,n_live_tup AS rows FROM pg_stat_user_tables ORDER BY n_live_tup DESC'
     tables = DbClient.query(which_db, tables_sql).to_a
     
     tables.each_with_index do |item, index|
-      if item['table_name'].in?(except_tables)
+      if item['table_name'].in?(@except_tables)
         tables[index] = nil
       else
          begin

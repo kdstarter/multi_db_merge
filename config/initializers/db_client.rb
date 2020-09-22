@@ -1,5 +1,5 @@
 module DbClient
-  LOG_SQL = false
+  LOG_SQL = true
 
   def logger
     return @logger if @logger.present?
