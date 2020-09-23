@@ -14,6 +14,7 @@ namespace :db_merger do
     execute_step2 # keep_assos策略，合并关联表和不重复的主表数据，因为主表重复的数据在largerDB已存在
     execute_step3 # 删除不需要迁移的数据表数据
     # 前3步修改的是smallerDB数据，step4: 使用Navicat将smallerDB所有表的数据导出，再全部导入到largerDB
+    execute_step5 # 重置largerDB的整型ID主键自动增长为 max(id)
 
     end_time = Time.now.to_f.round(3)
     time_spent = (end_time - start_time).round(3)
@@ -48,6 +49,28 @@ namespace :db_merger do
         DbClient.log_by :warn, "#{table_name} deleted #{main_rows} rows."
       else
         DbClient.log_by :warn, "Todo table #{table_name} clear data"
+      end
+    end
+  end
+
+  def execute_step5
+    which_db = :larger
+    @tables = { larger: [], smaller: [], expect: [] }
+    tables_larger = tables_info(which_db, @DEFAULT_ID)
+    @schemas_by_id = get_tables_id_columns(which_db, @DEFAULT_ID)
+
+    print "\n---set_id_seq---"
+    @schemas_by_id.each do |tab_name, rows_arr|
+      rows_arr.each do |row|
+        if row['column_name'] == @DEFAULT_ID && row['udt_name'].start_with?('int')
+          set_id_seq_sql = "SELECT pg_catalog.setval('public.#{tab_name}_id_seq', (SELECT max(id) FROM #{tab_name}), true)"
+          if @apply_fix
+            setval = DbClient.query(which_db, set_id_seq_sql).first['setval']
+            DbClient.log_by :info, "Table #{tab_name} set_id_seq as #{setval}"
+          else
+            DbClient.log_by :info, "Todo table #{tab_name} set_id_seq."
+          end
+        end
       end
     end
   end
